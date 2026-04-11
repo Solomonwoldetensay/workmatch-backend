@@ -81,7 +81,8 @@ async function uploadToCloudinary(base64Data, resourceType = 'video') {
 
     const timestamp = Math.round(Date.now() / 1000);
     const folder = 'workmatch';
-    const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
+    const eager = 'f_mp4,q_auto';
+    const paramsToSign = `eager=${eager}&folder=${folder}&timestamp=${timestamp}`;
     const signature = crypto
       .createHash('sha1')
       .update(paramsToSign + apiSecret)
@@ -109,6 +110,10 @@ async function uploadToCloudinary(base64Data, resourceType = 'video') {
       'Content-Disposition: form-data; name="folder"',
       '',
       folder,
+      `--${boundary}`,
+      'Content-Disposition: form-data; name="eager"',
+      '',
+      eager,
       `--${boundary}--`,
     ].join('\r\n');
 
@@ -130,7 +135,9 @@ async function uploadToCloudinary(base64Data, resourceType = 'video') {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          if (parsed.secure_url) {
+          if (parsed.eager && parsed.eager[0] && parsed.eager[0].secure_url) {
+            resolve(parsed.eager[0].secure_url);
+          } else if (parsed.secure_url) {
             resolve(parsed.secure_url);
           } else {
             reject(new Error(parsed.error?.message || 'Upload failed'));
