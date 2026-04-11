@@ -1,155 +1,407 @@
-// ─────────────────────────────────────────────
-// WorkMatch — Main API Server
-// Built with Node.js + Express + PostgreSQL
-// ─────────────────────────────────────────────
-
+// WorkMatch API Server — Single File Version
+// All routes and database in one file for easy deployment
+ 
 require('dotenv').config();
-
-const express     = require('express');
-const cors        = require('cors');
-const helmet      = require('helmet');
-const rateLimit   = require('express-rate-limit');
-const path        = require('path');
-
-// Import route files
-const authRoutes     = require('./routes/auth');
-const projectRoutes  = require('./routes/projects');
-const matchRoutes    = require('./routes/matches');
-const messageRoutes  = require('./routes/messages');
-
-const app  = express();
-const PORT = process.env.PORT || 5000;
-
-// ── SECURITY MIDDLEWARE ───────────────────────
-// Helmet sets secure HTTP headers
-app.use(helmet());
-
-// CORS — allows your frontend to call this API
+const express = require('express');
+const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
+ 
+const app = express();
+const PORT = process.env.PORT || 3000;
+ 
+// ── DATABASE ──────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+ 
+const db = async (text, params) => {
+  const result = await pool.query(text, params);
+  return result;
+};
+ 
+// ── MIDDLEWARE ────────────────────────────────
 app.use(cors({
   origin: [
-    process.env.FRONTEND_URL || 'http://localhost:3000',
-    'http://localhost:5500',   // VS Code Live Server
-    'http://127.0.0.1:5500',
-    'https://workmatch.netlify.app', // Your Netlify URL
+    process.env.FRONTEND_URL || '*',
+    'https://workmatchit.netlify.app',
+    'http://localhost:3000',
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-
-// Rate limiting — prevents abuse
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max:      100,             // max 100 requests per window per IP
-  message:  { success: false, message: 'Too many requests. Please try again in 15 minutes.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api/', limiter);
-
-// Stricter limit on auth routes
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10, // only 10 login/signup attempts per 15 min
-  message: { success: false, message: 'Too many login attempts. Please wait 15 minutes.' },
-});
-app.use('/api/auth/login',  authLimiter);
-app.use('/api/auth/signup', authLimiter);
-
-// ── BODY PARSING ─────────────────────────────
 app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// ── STATIC FILES (uploaded images) ───────────
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// ── API ROUTES ────────────────────────────────
-app.use('/api/auth',     authRoutes);
-app.use('/api/projects', projectRoutes);
-app.use('/api/matches',  matchRoutes);
-app.use('/api/messages', messageRoutes);
-
-// ── HEALTH CHECK ─────────────────────────────
-app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'WorkMatch API is running',
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-  });
-});
-
-// ── API DOCS (simple) ─────────────────────────
-app.get('/api', (req, res) => {
-  res.json({
-    success: true,
-    name: 'WorkMatch API',
-    version: '1.0.0',
-    endpoints: {
-      auth: {
-        'POST /api/auth/signup':   'Create new account',
-        'POST /api/auth/login':    'Login and get token',
-        'GET  /api/auth/me':       'Get current user (auth required)',
-        'PUT  /api/auth/profile':  'Update profile (auth required)',
-      },
-      projects: {
-        'GET    /api/projects':          'Get project feed (supports ?category=&mode=&page=&search=)',
-        'POST   /api/projects':          'Create new project (auth required)',
-        'GET    /api/projects/mine':     'Get my projects (auth required)',
-        'GET    /api/projects/:id':      'Get single project',
-        'PUT    /api/projects/:id':      'Update project (auth required, owner only)',
-        'DELETE /api/projects/:id':      'Delete project (auth required, owner only)',
-        'POST   /api/projects/:id/view': 'Increment view count',
-      },
-      matches: {
-        'POST /api/matches/swipe':           'Swipe on a project — body: { project_id, action, message? }',
-        'GET  /api/matches/requests':        'Get incoming match requests (auth required)',
-        'PUT  /api/matches/:id/accept':      'Accept a match request (auth required)',
-        'PUT  /api/matches/:id/decline':     'Decline a match request (auth required)',
-        'GET  /api/matches/my-matches':      'Get all accepted matches (auth required)',
-      },
-      messages: {
-        'GET  /api/messages/conversations':         'Get all conversations (auth required)',
-        'GET  /api/messages/:conversation_id':      'Get messages in a conversation (auth required)',
-        'POST /api/messages/:conversation_id':      'Send a message (auth required)',
-        'PUT  /api/messages/:conversation_id/read': 'Mark messages as read (auth required)',
-      },
+ 
+// ── AUTH HELPER ───────────────────────────────
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, process.env.JWT_SECRET || 'workmatch_secret_2026', { expiresIn: '7d' });
+};
+ 
+const protect = async (req, res, next) => {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Not authenticated. Please log in.' });
     }
-  });
+    const token = auth.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'workmatch_secret_2026');
+    const result = await db('SELECT id, email, full_name, role FROM users WHERE id = $1', [decoded.id]);
+    if (!result.rows.length) return res.status(401).json({ success: false, message: 'User not found.' });
+    req.user = result.rows[0];
+    next();
+  } catch (err) {
+    return res.status(401).json({ success: false, message: 'Invalid token. Please log in again.' });
+  }
+};
+ 
+const optionalAuth = async (req, res, next) => {
+  try {
+    const auth = req.headers.authorization;
+    if (auth && auth.startsWith('Bearer ')) {
+      const token = auth.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'workmatch_secret_2026');
+      const result = await db('SELECT id, email, full_name FROM users WHERE id = $1', [decoded.id]);
+      if (result.rows.length) req.user = result.rows[0];
+    }
+  } catch (e) {}
+  next();
+};
+ 
+// ── HEALTH CHECK ──────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({ success: true, message: 'WorkMatch API is running!', version: '1.0.0' });
 });
-
-// ── 404 HANDLER ──────────────────────────────
+ 
+// ── AUTH ROUTES ───────────────────────────────
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { email, password, full_name, location } = req.body;
+    if (!email || !password || !full_name) {
+      return res.status(400).json({ success: false, message: 'Email, password, and name are required.' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+    }
+    const existing = await db('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ success: false, message: 'An account with this email already exists.' });
+    }
+    const password_hash = await bcrypt.hash(password, 10);
+    const result = await db(
+      `INSERT INTO users (email, password_hash, full_name, location)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, email, full_name, location, created_at`,
+      [email.toLowerCase(), password_hash, full_name, location || null]
+    );
+    const user = result.rows[0];
+    const token = generateToken(user.id);
+    res.status(201).json({ success: true, message: 'Account created!', token, user });
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({ success: false, message: 'Failed to create account.' });
+  }
+});
+ 
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Email and password required.' });
+    }
+    const result = await db(
+      'SELECT id, email, password_hash, full_name, bio, location, avatar_url, role FROM users WHERE email = $1',
+      [email.toLowerCase()]
+    );
+    if (!result.rows.length) {
+      return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
+    }
+    const user = result.rows[0];
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) {
+      return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
+    }
+    const token = generateToken(user.id);
+    const { password_hash, ...safeUser } = user;
+    res.json({ success: true, message: 'Logged in!', token, user: safeUser });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, message: 'Login failed.' });
+  }
+});
+ 
+app.get('/api/auth/me', protect, async (req, res) => {
+  try {
+    const result = await db(
+      'SELECT id, email, full_name, bio, location, skills, avatar_url, created_at FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const stats = await db(
+      `SELECT 
+         (SELECT COUNT(*) FROM projects WHERE creator_id = $1 AND is_active = true) AS projects,
+         (SELECT COUNT(*) FROM matches WHERE (creator_id = $1 OR discoverer_id = $1) AND status = 'accepted') AS matches`,
+      [req.user.id]
+    );
+    res.json({
+      success: true,
+      user: {
+        ...result.rows[0],
+        stats: {
+          projects: parseInt(stats.rows[0].projects),
+          matches: parseInt(stats.rows[0].matches)
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get user.' });
+  }
+});
+ 
+// ── PROJECTS ROUTES ───────────────────────────
+app.get('/api/projects', optionalAuth, async (req, res) => {
+  try {
+    const { category, mode, page = 1, limit = 20, search } = req.query;
+    const params = [];
+    const conditions = ['p.is_active = true'];
+ 
+    if (category && category !== 'all') {
+      params.push(category);
+      conditions.push(`LOWER(p.category) = LOWER($${params.length})`);
+    }
+    if (mode && mode !== 'all') {
+      params.push(mode);
+      conditions.push(`(p.mode = $${params.length} OR p.mode = 'both')`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      conditions.push(`(p.title ILIKE $${params.length} OR p.description ILIKE $${params.length})`);
+    }
+    if (req.user) {
+      params.push(req.user.id);
+      conditions.push(`p.creator_id != $${params.length}`);
+      conditions.push(`p.id NOT IN (SELECT project_id FROM swipes WHERE swiper_id = $${params.length})`);
+    }
+ 
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    params.push(parseInt(limit));
+    params.push(offset);
+ 
+    const result = await db(
+      `SELECT p.id, p.title, p.description, p.category, p.tags, p.mode, p.stage,
+              p.investment_target, p.equity_offered, p.views, p.created_at,
+              u.id AS creator_id, u.full_name AS creator_name,
+              u.location AS creator_location, u.avatar_url AS creator_avatar,
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS match_count
+       FROM projects p
+       JOIN users u ON p.creator_id = u.id
+       ${where}
+       ORDER BY p.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+ 
+    res.json({ success: true, projects: result.rows });
+  } catch (error) {
+    console.error('Get projects error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load projects.' });
+  }
+});
+ 
+app.get('/api/projects/mine', protect, async (req, res) => {
+  try {
+    const result = await db(
+      `SELECT p.*,
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS total_matches
+       FROM projects p WHERE p.creator_id = $1 ORDER BY p.created_at DESC`,
+      [req.user.id]
+    );
+    res.json({ success: true, projects: result.rows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load your projects.' });
+  }
+});
+ 
+app.post('/api/projects', protect, async (req, res) => {
+  try {
+    const { title, description, category, tags, mode, stage, investment_target, equity_offered } = req.body;
+    if (!title || !description || !category || !mode) {
+      return res.status(400).json({ success: false, message: 'Title, description, category, and mode are required.' });
+    }
+    const result = await db(
+      `INSERT INTO projects (creator_id, title, description, category, tags, mode, stage, investment_target, equity_offered)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.user.id, title, description, category, tags || [], mode, stage || null, investment_target || null, equity_offered || null]
+    );
+    res.status(201).json({ success: true, message: 'Project posted!', project: result.rows[0] });
+  } catch (error) {
+    console.error('Create project error:', error);
+    res.status(500).json({ success: false, message: 'Failed to create project.' });
+  }
+});
+ 
+app.post('/api/projects/:id/view', async (req, res) => {
+  try {
+    await db('UPDATE projects SET views = views + 1 WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false });
+  }
+});
+ 
+// ── MATCHES ROUTES ────────────────────────────
+app.post('/api/matches/swipe', optionalAuth, async (req, res) => {
+  try {
+    const { project_id, action } = req.body;
+    if (!project_id || !action) {
+      return res.status(400).json({ success: false, message: 'project_id and action required.' });
+    }
+ 
+    if (!req.user) {
+      return res.json({ success: true, message: 'Swipe recorded (guest).' });
+    }
+ 
+    // Record the swipe
+    await db(
+      `INSERT INTO swipes (swiper_id, project_id, action) VALUES ($1, $2, $3)
+       ON CONFLICT (swiper_id, project_id, action) DO NOTHING`,
+      [req.user.id, project_id, action]
+    ).catch(() => {});
+ 
+    if (action === 'skip') {
+      return res.json({ success: true, message: 'Skipped.' });
+    }
+ 
+    // Get project creator
+    const project = await db('SELECT creator_id, title FROM projects WHERE id = $1', [project_id]);
+    if (!project.rows.length) {
+      return res.status(404).json({ success: false, message: 'Project not found.' });
+    }
+ 
+    const match_type = action === 'invest' ? 'invest' : 'collab';
+ 
+    // Create match request
+    const matchResult = await db(
+      `INSERT INTO matches (project_id, creator_id, discoverer_id, match_type, status)
+       VALUES ($1, $2, $3, $4, 'pending')
+       ON CONFLICT (project_id, discoverer_id, match_type) DO NOTHING
+       RETURNING id`,
+      [project_id, project.rows[0].creator_id, req.user.id, match_type]
+    );
+ 
+    if (matchResult.rows.length > 0) {
+      // Auto-accept for now and create conversation
+      await db(
+        `UPDATE matches SET status = 'accepted' WHERE id = $1`,
+        [matchResult.rows[0].id]
+      );
+      await db(
+        `INSERT INTO conversations (match_id, user1_id, user2_id)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [matchResult.rows[0].id, project.rows[0].creator_id, req.user.id]
+      );
+    }
+ 
+    res.json({
+      success: true,
+      message: action === 'invest' ? 'Investment interest sent!' : 'Collaboration request sent!',
+      matched: matchResult.rows.length > 0
+    });
+  } catch (error) {
+    console.error('Swipe error:', error);
+    res.status(500).json({ success: false, message: 'Failed to process swipe.' });
+  }
+});
+ 
+app.get('/api/matches/my-matches', protect, async (req, res) => {
+  try {
+    const result = await db(
+      `SELECT m.id, m.match_type, m.status, m.created_at,
+              p.title AS project_title, p.id AS project_id,
+              c.id AS conversation_id,
+              CASE WHEN m.creator_id = $1 THEN u2.full_name ELSE u1.full_name END AS other_user_name,
+              CASE WHEN m.creator_id = $1 THEN m.discoverer_id ELSE m.creator_id END AS other_user_id,
+              conv.last_message
+       FROM matches m
+       JOIN projects p ON m.project_id = p.id
+       JOIN users u1 ON m.creator_id = u1.id
+       JOIN users u2 ON m.discoverer_id = u2.id
+       LEFT JOIN conversations conv ON conv.match_id = m.id
+       LEFT JOIN conversations c ON c.match_id = m.id
+       WHERE (m.creator_id = $1 OR m.discoverer_id = $1) AND m.status = 'accepted'
+       ORDER BY m.created_at DESC`,
+      [req.user.id]
+    );
+    res.json({ success: true, matches: result.rows });
+  } catch (error) {
+    console.error('Get matches error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load matches.' });
+  }
+});
+ 
+// ── MESSAGES ROUTES ───────────────────────────
+app.get('/api/messages/:conversation_id', protect, async (req, res) => {
+  try {
+    const result = await db(
+      `SELECT m.*, u.full_name AS sender_name
+       FROM messages m
+       JOIN users u ON m.sender_id = u.id
+       WHERE m.conversation_id = $1
+       ORDER BY m.created_at ASC`,
+      [req.params.conversation_id]
+    );
+    res.json({ success: true, messages: result.rows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load messages.' });
+  }
+});
+ 
+app.post('/api/messages/:conversation_id', protect, async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content) return res.status(400).json({ success: false, message: 'Message content required.' });
+ 
+    const result = await db(
+      `INSERT INTO messages (conversation_id, sender_id, content) VALUES ($1, $2, $3) RETURNING *`,
+      [req.params.conversation_id, req.user.id, content]
+    );
+    await db(
+      `UPDATE conversations SET last_message = $1, last_message_at = NOW() WHERE id = $2`,
+      [content.substring(0, 100), req.params.conversation_id]
+    );
+    res.status(201).json({ success: true, message: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to send message.' });
+  }
+});
+ 
+app.put('/api/messages/:conversation_id/read', protect, async (req, res) => {
+  try {
+    await db(
+      `UPDATE messages SET is_read = true WHERE conversation_id = $1 AND sender_id != $2`,
+      [req.params.conversation_id, req.user.id]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false });
+  }
+});
+ 
+// ── 404 ───────────────────────────────────────
 app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Route ${req.method} ${req.originalUrl} not found.`
-  });
+  res.status(404).json({ success: false, message: 'Route not found.' });
 });
-
-// ── GLOBAL ERROR HANDLER ─────────────────────
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(err.status || 500).json({
-    success: false,
-    message: process.env.NODE_ENV === 'production'
-      ? 'An unexpected error occurred.'
-      : err.message,
-  });
-});
-
-// ── START SERVER ─────────────────────────────
+ 
+// ── START ─────────────────────────────────────
 app.listen(PORT, () => {
-  console.log('\n========================================');
-  console.log('  WorkMatch API Server');
   console.log('========================================');
-  console.log(`  Status:      Running`);
-  console.log(`  Port:        ${PORT}`);
+  console.log('  WorkMatch API Server — Running!');
+  console.log(`  Port: ${PORT}`);
   console.log(`  Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`  API Base:    http://localhost:${PORT}/api`);
-  console.log(`  Docs:        http://localhost:${PORT}/api`);
-  console.log(`  Health:      http://localhost:${PORT}/api/health`);
-  console.log('========================================\n');
+  console.log('========================================');
 });
-
+ 
 module.exports = app;
+ 
