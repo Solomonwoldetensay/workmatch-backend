@@ -404,7 +404,43 @@ app.post('/api/matches/swipe', optionalAuth, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to process swipe.' });
   }
 });
- 
+ // ── COMMENTS ROUTES ───────────────────────────
+app.get('/api/projects/:id/comments', async (req, res) => {
+  try {
+    const result = await db(
+      `SELECT c.id, c.content, c.created_at,
+              u.full_name AS user_name
+       FROM comments c
+       JOIN users u ON c.user_id = u.id
+       WHERE c.project_id = $1
+       ORDER BY c.created_at ASC`,
+      [req.params.id]
+    );
+    res.json({ success: true, comments: result.rows });
+  } catch (error) {
+    console.error('Get comments error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load comments.' });
+  }
+});
+
+app.post('/api/projects/:id/comments', protect, async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (!content) {
+      return res.status(400).json({ success: false, message: 'Comment content required.' });
+    }
+    const result = await db(
+      `INSERT INTO comments (project_id, user_id, content)
+       VALUES ($1, $2, $3)
+       RETURNING id, content, created_at`,
+      [req.params.id, req.user.id, content]
+    );
+    res.status(201).json({ success: true, comment: result.rows[0] });
+  } catch (error) {
+    console.error('Post comment error:', error);
+    res.status(500).json({ success: false, message: 'Failed to post comment.' });
+  }
+});
 app.get('/api/matches/my-matches', protect, async (req, res) => {
   try {
     const result = await db(
