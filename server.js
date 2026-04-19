@@ -404,12 +404,13 @@ app.post('/api/matches/swipe', optionalAuth, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to process swipe.' });
   }
 });
- // ── COMMENTS ROUTES ───────────────────────────
+
+// ── COMMENTS ROUTES ───────────────────────────
 app.get('/api/projects/:id/comments', async (req, res) => {
   try {
     const result = await db(
-      `SELECT c.id, c.content, c.created_at,
-              u.full_name AS user_name
+      `SELECT c.id, c.content, c.created_at, c.parent_id,
+              u.full_name AS user_name, u.id AS user_id
        FROM comments c
        JOIN users u ON c.user_id = u.id
        WHERE c.project_id = $1
@@ -425,15 +426,15 @@ app.get('/api/projects/:id/comments', async (req, res) => {
 
 app.post('/api/projects/:id/comments', protect, async (req, res) => {
   try {
-    const { content } = req.body;
+    const { content, parent_id } = req.body;
     if (!content) {
       return res.status(400).json({ success: false, message: 'Comment content required.' });
     }
     const result = await db(
-      `INSERT INTO comments (project_id, user_id, content)
-       VALUES ($1, $2, $3)
-       RETURNING id, content, created_at`,
-      [req.params.id, req.user.id, content]
+      `INSERT INTO comments (project_id, user_id, content, parent_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, content, created_at, parent_id`,
+      [req.params.id, req.user.id, content, parent_id || null]
     );
     res.status(201).json({ success: true, comment: result.rows[0] });
   } catch (error) {
@@ -441,6 +442,8 @@ app.post('/api/projects/:id/comments', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to post comment.' });
   }
 });
+
+// ── MATCHES ROUTES (continued) ────────────────
 app.get('/api/matches/my-matches', protect, async (req, res) => {
   try {
     const result = await db(
@@ -529,4 +532,3 @@ app.listen(PORT, () => {
 });
  
 module.exports = app;
- 
