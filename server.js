@@ -294,7 +294,10 @@ app.get('/api/projects', optionalAuth, async (req, res) => {
               p.investment_target, p.equity_offered, p.views, p.video_url, p.image_url, p.created_at,
               u.id AS creator_id, u.full_name AS creator_name,
               u.location AS creator_location, u.avatar_url AS creator_avatar,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS match_count
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'invest') AS invest_count,
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS match_count,
+              (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count
        FROM projects p
        JOIN users u ON p.creator_id = u.id
        ${where}
@@ -314,8 +317,15 @@ app.get('/api/projects/mine', protect, async (req, res) => {
   try {
     const result = await db(
       `SELECT p.*,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS total_matches
-       FROM projects p WHERE p.creator_id = $1 ORDER BY p.created_at DESC`,
+              u.full_name AS creator_name,
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'invest') AS invest_count,
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
+              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS total_matches,
+              (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count
+       FROM projects p
+       JOIN users u ON p.creator_id = u.id
+       WHERE p.creator_id = $1
+       ORDER BY p.created_at DESC`,
       [req.user.id]
     );
     res.json({ success: true, projects: result.rows });
