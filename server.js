@@ -395,15 +395,7 @@ app.post('/api/matches/swipe', optionalAuth, async (req, res) => {
       [project_id, project.rows[0].creator_id, req.user.id, match_type]
     );
  
-    if (matchResult.rows.length > 0) {
-      await db(`UPDATE matches SET status = 'accepted' WHERE id = $1`, [matchResult.rows[0].id]);
-      await db(
-        `INSERT INTO conversations (match_id, user1_id, user2_id)
-         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-        [matchResult.rows[0].id, project.rows[0].creator_id, req.user.id]
-      );
-    }
- 
+    // Stay pending — project owner must accept manually
     res.json({
       success: true,
       message: action === 'invest' ? 'Investment interest sent!' : 'Collaboration request sent!',
@@ -412,6 +404,69 @@ app.post('/api/matches/swipe', optionalAuth, async (req, res) => {
   } catch (error) {
     console.error('Swipe error:', error);
     res.status(500).json({ success: false, message: 'Failed to process swipe.' });
+  }
+});
+
+// ── ACCEPT / DENY MATCH ───────────────────────
+app.post('/api/matches/:id/accept', protect, async (req, res) => {
+  try {
+    // Only the project creator can accept
+    const match = await db(
+      `SELECT m.*, p.creator_id FROM matches m JOIN projects p ON m.project_id = p.id WHERE m.id = $1`,
+      [req.params.id]
+    );
+    if (!match.rows.length) return res.status(404).json({ success: false, message: 'Match not found.' });
+    if (match.rows[0].creator_id !== req.user.id) return res.status(403).json({ success: false, message: 'Not authorized.' });
+
+    await db(`UPDATE matches SET status = 'accepted' WHERE id = $1`, [req.params.id]);
+    await db(
+      `INSERT INTO conversations (match_id, user1_id, user2_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [req.params.id, match.rows[0].creator_id, match.rows[0].discoverer_id]
+    );
+    res.json({ success: true, message: 'Match accepted!' });
+  } catch (error) {
+    console.error('Accept match error:', error);
+    res.status(500).json({ success: false, message: 'Failed to accept match.' });
+  }
+});
+
+app.post('/api/matches/:id/deny', protect, async (req, res) => {
+  try {
+    const match = await db(
+      `SELECT m.*, p.creator_id FROM matches m JOIN projects p ON m.project_id = p.id WHERE m.id = $1`,
+      [req.params.id]
+    );
+    if (!match.rows.length) return res.status(404).json({ success: false, message: 'Match not found.' });
+    if (match.rows[0].creator_id !== req.user.id) return res.status(403).json({ success: false, message: 'Not authorized.' });
+
+    await db(`UPDATE matches SET status = 'denied' WHERE id = $1`, [req.params.id]);
+    res.json({ success: true, message: 'Match denied.' });
+  } catch (error) {
+    console.error('Deny match error:', error);
+    res.status(500).json({ success: false, message: 'Failed to deny match.' });
+  }
+});
+
+// ── GET REQUESTS FOR A PROJECT ────────────────
+app.get('/api/projects/:id/requests', protect, async (req, res) => {
+  try {
+    // Only the project creator can see requests
+    const project = await db('SELECT creator_id FROM projects WHERE id = $1', [req.params.id]);
+    if (!project.rows.length) return res.status(404).json({ success: false, message: 'Project not found.' });
+    if (project.rows[0].creator_id !== req.user.id) return res.status(403).json({ success: false, message: 'Not authorized.' });
+
+    const result = await db(
+      `SELECT m.id, m.match_type, m.status, m.created_at,
+              u.full_name AS requester_name, u.id AS requester_id, u.location AS requester_location
+       FROM matches m
+       JOIN users u ON m.discoverer_id = u.id
+       WHERE m.project_id = $1 AND m.status = 'pending'
+       ORDER BY m.created_at DESC`,
+      [req.params.id]
+    );
+    res.json({ success: true, requests: result.rows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load requests.' });
   }
 });
 
@@ -462,6 +517,7 @@ app.get('/api/matches/my-matches', protect, async (req, res) => {
               c.id AS conversation_id,
               CASE WHEN m.creator_id = $1 THEN u2.full_name ELSE u1.full_name END AS other_user_name,
               CASE WHEN m.creator_id = $1 THEN m.discoverer_id ELSE m.creator_id END AS other_user_id,
+              CASE WHEN m.creator_id = $1 THEN 'received' ELSE 'sent' END AS direction,
               conv.last_message
        FROM matches m
        JOIN projects p ON m.project_id = p.id
@@ -469,8 +525,9 @@ app.get('/api/matches/my-matches', protect, async (req, res) => {
        JOIN users u2 ON m.discoverer_id = u2.id
        LEFT JOIN conversations conv ON conv.match_id = m.id
        LEFT JOIN conversations c ON c.match_id = m.id
-       WHERE (m.creator_id = $1 OR m.discoverer_id = $1) AND m.status = 'accepted'
-       ORDER BY m.created_at DESC`,
+       WHERE (m.creator_id = $1 OR m.discoverer_id = $1)
+         AND m.status IN ('pending', 'accepted')
+       ORDER BY m.status ASC, m.created_at DESC`,
       [req.user.id]
     );
     res.json({ success: true, matches: result.rows });
