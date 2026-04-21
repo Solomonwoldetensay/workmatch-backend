@@ -343,9 +343,9 @@ app.post('/api/projects', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Title, description, category, and mode are required.' });
     }
     const result = await db(
-      `INSERT INTO projects (creator_id, title, description, category, tags, mode, stage, investment_target, equity_offered, video_url, image_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [req.user.id, title, description, category, tags || [], mode, stage || null, investment_target || null, equity_offered || null, video_url || null, image_url || null]
+      `INSERT INTO projects (creator_id, title, description, category, tags, required_skills, mode, stage, investment_target, equity_offered, video_url, image_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [req.user.id, title, description, category, tags || [], tags || [], mode, stage || null, investment_target || null, equity_offered || null, video_url || null, image_url || null]
     );
     res.status(201).json({ success: true, message: 'Project posted!', project: result.rows[0] });
   } catch (error) {
