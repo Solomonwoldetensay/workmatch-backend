@@ -457,6 +457,39 @@ app.post('/api/matches/:id/deny', protect, async (req, res) => {
   }
 });
 
+// ── UPDATE PROFILE ────────────────────────────
+app.put('/api/auth/profile', protect, async (req, res) => {
+  try {
+    const { full_name, location, bio, avatar_base64 } = req.body;
+    let avatar_url = null;
+
+    if (avatar_base64) {
+      avatar_url = await uploadToCloudinary(avatar_base64, 'image');
+    }
+
+    const fields = [];
+    const values = [];
+    let i = 1;
+
+    if (full_name) { fields.push(`full_name = $${i++}`); values.push(full_name); }
+    if (location !== undefined) { fields.push(`location = $${i++}`); values.push(location); }
+    if (bio !== undefined) { fields.push(`bio = $${i++}`); values.push(bio); }
+    if (avatar_url) { fields.push(`avatar_url = $${i++}`); values.push(avatar_url); }
+
+    if (!fields.length) return res.status(400).json({ success: false, message: 'Nothing to update.' });
+
+    values.push(req.user.id);
+    const result = await db(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, email, full_name, location, bio, avatar_url`,
+      values
+    );
+    res.json({ success: true, user: result.rows[0] });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ success: false, message: 'Failed to update profile.' });
+  }
+});
+
 // ── LIKES ROUTES ──────────────────────────────
 app.post('/api/projects/:id/like', protect, async (req, res) => {
   try {
