@@ -155,15 +155,7 @@ async function uploadToCloudinary(base64Data, resourceType = 'video') {
 }
  
 // ── HEALTH CHECK ──────────────────────────────
-app.get('/api/health', async (req, res) => {
-  // Create likes table if not exists
-  await db(`CREATE TABLE IF NOT EXISTS likes (
-    id SERIAL PRIMARY KEY,
-    project_id INTEGER NOT NULL,
-    user_id INTEGER NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(project_id, user_id)
-  )`).catch(()=>{});
+app.get('/api/health', (req, res) => {
   res.json({ success: true, message: 'WE-NEED-U API is running!', version: '2.0.0' });
 });
  
@@ -306,7 +298,7 @@ app.get('/api/projects', optionalAuth, async (req, res) => {
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS match_count,
               (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count,
-              (SELECT COUNT(*) FROM likes WHERE project_id = p.id) AS like_count
+              (SELECT COALESCE(COUNT(*),0) FROM likes WHERE project_id = p.id) AS like_count
        FROM projects p
        JOIN users u ON p.creator_id = u.id
        ${where}
@@ -330,7 +322,7 @@ app.get('/api/projects/mine', protect, async (req, res) => {
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'invest') AS invest_count,
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS total_matches,
-              (SELECT COUNT(*) FROM likes WHERE project_id = p.id) AS like_count,
+              (SELECT COALESCE(COUNT(*),0) FROM likes WHERE project_id = p.id) AS like_count,
               (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count
        FROM projects p
        JOIN users u ON p.creator_id = u.id
