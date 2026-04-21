@@ -155,7 +155,15 @@ async function uploadToCloudinary(base64Data, resourceType = 'video') {
 }
  
 // ── HEALTH CHECK ──────────────────────────────
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  // Create likes table if not exists
+  await db(`CREATE TABLE IF NOT EXISTS likes (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(project_id, user_id)
+  )`).catch(()=>{});
   res.json({ success: true, message: 'WE-NEED-U API is running!', version: '2.0.0' });
 });
  
@@ -297,7 +305,8 @@ app.get('/api/projects', optionalAuth, async (req, res) => {
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'invest') AS invest_count,
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS match_count,
-              (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count
+              (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count,
+              (SELECT COUNT(*) FROM likes WHERE project_id = p.id) AS like_count
        FROM projects p
        JOIN users u ON p.creator_id = u.id
        ${where}
@@ -321,6 +330,7 @@ app.get('/api/projects/mine', protect, async (req, res) => {
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'invest') AS invest_count,
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
               (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS total_matches,
+              (SELECT COUNT(*) FROM likes WHERE project_id = p.id) AS like_count,
               (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count
        FROM projects p
        JOIN users u ON p.creator_id = u.id
@@ -444,6 +454,35 @@ app.post('/api/matches/:id/deny', protect, async (req, res) => {
   } catch (error) {
     console.error('Deny match error:', error);
     res.status(500).json({ success: false, message: 'Failed to deny match.' });
+  }
+});
+
+// ── LIKES ROUTES ──────────────────────────────
+app.post('/api/projects/:id/like', protect, async (req, res) => {
+  try {
+    const existing = await db('SELECT id FROM likes WHERE project_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+    if (existing.rows.length) {
+      await db('DELETE FROM likes WHERE project_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+      res.json({ success: true, liked: false });
+    } else {
+      await db('INSERT INTO likes (project_id, user_id) VALUES ($1, $2)', [req.params.id, req.user.id]);
+      res.json({ success: true, liked: true });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to toggle like.' });
+  }
+});
+
+app.get('/api/projects/:id/likes', protect, async (req, res) => {
+  try {
+    const result = await db(
+      `SELECT u.id, u.full_name, u.location FROM likes l JOIN users u ON l.user_id = u.id WHERE l.project_id = $1 ORDER BY l.created_at DESC`,
+      [req.params.id]
+    );
+    const myLike = await db('SELECT id FROM likes WHERE project_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+    res.json({ success: true, likes: result.rows, liked: myLike.rows.length > 0 });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to get likes.' });
   }
 });
 
