@@ -1,27 +1,14 @@
-// WE-NEED-U API Server — With Cloudinary Video Upload
+// WE-NEED-U API Server
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { Pool } = require('pg');
 const https = require('https');
 const crypto = require('crypto');
- 
+const { protect } = require('./middleware/auth');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
- 
-// ── DATABASE ──────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
- 
-const db = async (text, params) => {
-  const result = await pool.query(text, params);
-  return result;
-};
- 
+
 // ── MIDDLEWARE ────────────────────────────────
 app.use(cors({
   origin: '*',
@@ -31,94 +18,37 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
- 
-// ── AUTH HELPER ───────────────────────────────
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET || 'we-need-u_secret_2026', { expiresIn: '7d' });
-};
- 
-const protect = async (req, res, next) => {
-  try {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith('Bearer ')) {
-      return res.status(401).json({ success: false, message: 'Not authenticated.' });
-    }
-    const token = auth.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'we-need-u_secret_2026');
-    const result = await db('SELECT id, email, full_name, role FROM users WHERE id = $1', [decoded.id]);
-    if (!result.rows.length) return res.status(401).json({ success: false, message: 'User not found.' });
-    req.user = result.rows[0];
-    next();
-  } catch (err) {
-    return res.status(401).json({ success: false, message: 'Invalid token.' });
-  }
-};
- 
-const optionalAuth = async (req, res, next) => {
-  try {
-    const auth = req.headers.authorization;
-    if (auth && auth.startsWith('Bearer ')) {
-      const token = auth.split(' ')[1];
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'we-need-u_secret_2026');
-      const result = await db('SELECT id, email, full_name FROM users WHERE id = $1', [decoded.id]);
-      if (result.rows.length) req.user = result.rows[0];
-    }
-  } catch (e) {}
-  next();
-};
- 
+
 // ── CLOUDINARY UPLOAD ─────────────────────────
 async function uploadToCloudinary(base64Data, resourceType = 'video') {
   return new Promise((resolve, reject) => {
     const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiKey    = process.env.CLOUDINARY_API_KEY;
     const apiSecret = process.env.CLOUDINARY_API_SECRET;
- 
+
     if (!cloudName || !apiKey || !apiSecret) {
       reject(new Error('Cloudinary not configured'));
       return;
     }
- 
+
     const timestamp = Math.round(Date.now() / 1000);
     const folder = 'we-need-u';
     const eager = 'f_mp4,q_auto';
     const paramsToSign = `eager=${eager}&folder=${folder}&timestamp=${timestamp}`;
-    const signature = crypto
-      .createHash('sha1')
-      .update(paramsToSign + apiSecret)
-      .digest('hex');
- 
+    const signature = crypto.createHash('sha1').update(paramsToSign + apiSecret).digest('hex');
+
     const boundary = '----FormBoundary' + Math.random().toString(36);
     const body = [
-      `--${boundary}`,
-      'Content-Disposition: form-data; name="file"',
-      '',
-      base64Data,
-      `--${boundary}`,
-      'Content-Disposition: form-data; name="api_key"',
-      '',
-      apiKey,
-      `--${boundary}`,
-      'Content-Disposition: form-data; name="timestamp"',
-      '',
-      timestamp.toString(),
-      `--${boundary}`,
-      'Content-Disposition: form-data; name="signature"',
-      '',
-      signature,
-      `--${boundary}`,
-      'Content-Disposition: form-data; name="folder"',
-      '',
-      folder,
-      `--${boundary}`,
-      'Content-Disposition: form-data; name="eager"',
-      '',
-      eager,
+      `--${boundary}`, 'Content-Disposition: form-data; name="file"', '', base64Data,
+      `--${boundary}`, 'Content-Disposition: form-data; name="api_key"', '', apiKey,
+      `--${boundary}`, 'Content-Disposition: form-data; name="timestamp"', '', timestamp.toString(),
+      `--${boundary}`, 'Content-Disposition: form-data; name="signature"', '', signature,
+      `--${boundary}`, 'Content-Disposition: form-data; name="folder"', '', folder,
+      `--${boundary}`, 'Content-Disposition: form-data; name="eager"', '', eager,
       `--${boundary}--`,
     ].join('\r\n');
- 
+
     const bodyBuffer = Buffer.from(body, 'utf8');
- 
     const options = {
       hostname: 'api.cloudinary.com',
       path: `/v1_1/${cloudName}/${resourceType}/upload`,
@@ -128,7 +58,7 @@ async function uploadToCloudinary(base64Data, resourceType = 'video') {
         'Content-Length': bodyBuffer.length,
       },
     };
- 
+
     const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
@@ -142,30 +72,25 @@ async function uploadToCloudinary(base64Data, resourceType = 'video') {
           } else {
             reject(new Error(parsed.error?.message || 'Upload failed'));
           }
-        } catch (e) {
-          reject(e);
-        }
+        } catch (e) { reject(e); }
       });
     });
- 
     req.on('error', reject);
     req.write(bodyBuffer);
     req.end();
   });
 }
- 
+
 // ── HEALTH CHECK ──────────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ success: true, message: 'WE-NEED-U API is running!', version: '2.0.0' });
+  res.json({ success: true, message: 'WE-NEED-U API is running!', version: '3.0.0' });
 });
- 
+
 // ── VIDEO UPLOAD ROUTE ────────────────────────
 app.post('/api/upload', protect, async (req, res) => {
   try {
     const { data, type } = req.body;
-    if (!data) {
-      return res.status(400).json({ success: false, message: 'No file data provided.' });
-    }
+    if (!data) return res.status(400).json({ success: false, message: 'No file data provided.' });
     const resourceType = (type || '').startsWith('video') ? 'video' : 'image';
     const url = await uploadToCloudinary(data, resourceType);
     res.json({ success: true, url });
@@ -174,485 +99,18 @@ app.post('/api/upload', protect, async (req, res) => {
     res.status(500).json({ success: false, message: 'Upload failed: ' + error.message });
   }
 });
- 
-// ── AUTH ROUTES ───────────────────────────────
-app.post('/api/auth/signup', async (req, res) => {
-  try {
-    const { email, password, full_name, location } = req.body;
-    if (!email || !password || !full_name) {
-      return res.status(400).json({ success: false, message: 'Email, password, and name are required.' });
-    }
-    if (password.length < 6) {
-      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
-    }
-    const existing = await db('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
-    if (existing.rows.length > 0) {
-      return res.status(400).json({ success: false, message: 'An account with this email already exists.' });
-    }
-    const password_hash = await bcrypt.hash(password, 10);
-    const result = await db(
-      `INSERT INTO users (email, password_hash, full_name, location)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, email, full_name, location, created_at`,
-      [email.toLowerCase(), password_hash, full_name, location || null]
-    );
-    const user = result.rows[0];
-    const token = generateToken(user.id);
-    res.status(201).json({ success: true, message: 'Account created!', token, user });
-  } catch (error) {
-    console.error('Signup error:', error);
-    res.status(500).json({ success: false, message: 'Failed to create account.' });
-  }
-});
- 
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'Email and password required.' });
-    }
-    const result = await db(
-      'SELECT id, email, password_hash, full_name, bio, location, avatar_url, role FROM users WHERE email = $1',
-      [email.toLowerCase()]
-    );
-    if (!result.rows.length) {
-      return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
-    }
-    const user = result.rows[0];
-    const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) {
-      return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
-    }
-    const token = generateToken(user.id);
-    const { password_hash, ...safeUser } = user;
-    res.json({ success: true, message: 'Logged in!', token, user: safeUser });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ success: false, message: 'Login failed.' });
-  }
-});
- 
-app.get('/api/auth/me', protect, async (req, res) => {
-  try {
-    const result = await db(
-      'SELECT id, email, full_name, bio, location, skills, avatar_url, created_at FROM users WHERE id = $1',
-      [req.user.id]
-    );
-    const stats = await db(
-      `SELECT 
-         (SELECT COUNT(*) FROM projects WHERE creator_id = $1 AND is_active = true) AS projects,
-         (SELECT COUNT(*) FROM matches WHERE (creator_id = $1 OR discoverer_id = $1) AND status = 'accepted') AS matches`,
-      [req.user.id]
-    );
-    res.json({
-      success: true,
-      user: {
-        ...result.rows[0],
-        stats: {
-          projects: parseInt(stats.rows[0].projects),
-          matches: parseInt(stats.rows[0].matches)
-        }
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to get user.' });
-  }
-});
- 
-// ── PROJECTS ROUTES ───────────────────────────
-app.get('/api/projects', optionalAuth, async (req, res) => {
-  try {
-    const { category, mode, page = 1, limit = 20, search } = req.query;
-    const params = [];
-    const conditions = ['p.is_active = true'];
- 
-    if (category && category !== 'all') {
-      params.push(category);
-      conditions.push(`LOWER(p.category) = LOWER($${params.length})`);
-    }
-    if (mode && mode !== 'all') {
-      params.push(mode);
-      conditions.push(`(p.mode = $${params.length} OR p.mode = 'both')`);
-    }
-    if (search) {
-      params.push(`%${search}%`);
-      conditions.push(`(p.title ILIKE $${params.length} OR p.description ILIKE $${params.length})`);
-    }
-    if (req.user) {
-      params.push(req.user.id);
-      conditions.push(`p.creator_id != $${params.length}`);
-      conditions.push(`p.id NOT IN (SELECT project_id FROM swipes WHERE swiper_id = $${params.length})`);
-    }
- 
-    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    params.push(parseInt(limit));
-    params.push(offset);
- 
-    const result = await db(
-      `SELECT p.id, p.title, p.description, p.category, p.tags, p.mode, p.stage,
-              p.investment_target, p.equity_offered, p.views, p.video_url, p.image_url, p.created_at,
-              u.id AS creator_id, u.full_name AS creator_name,
-              u.location AS creator_location, u.avatar_url AS creator_avatar,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'invest') AS invest_count,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS match_count,
-              (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count,
-              (SELECT COALESCE(COUNT(*),0) FROM likes WHERE project_id = p.id) AS like_count
-       FROM projects p
-       JOIN users u ON p.creator_id = u.id
-       ${where}
-       ORDER BY p.created_at DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params
-    );
- 
-    res.json({ success: true, projects: result.rows });
-  } catch (error) {
-    console.error('Get projects error:', error);
-    res.status(500).json({ success: false, message: 'Failed to load projects.' });
-  }
-});
- 
-app.get('/api/projects/mine', protect, async (req, res) => {
-  try {
-    const result = await db(
-      `SELECT p.*,
-              u.full_name AS creator_name,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'invest') AS invest_count,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted' AND match_type = 'collab') AS collab_count,
-              (SELECT COUNT(*) FROM matches WHERE project_id = p.id AND status = 'accepted') AS total_matches,
-              (SELECT COALESCE(COUNT(*),0) FROM likes WHERE project_id = p.id) AS like_count,
-              (SELECT COUNT(*) FROM comments WHERE project_id = p.id) AS comment_count
-       FROM projects p
-       JOIN users u ON p.creator_id = u.id
-       WHERE p.creator_id = $1
-       ORDER BY p.created_at DESC`,
-      [req.user.id]
-    );
-    res.json({ success: true, projects: result.rows });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to load your projects.' });
-  }
-});
- 
-app.post('/api/projects', protect, async (req, res) => {
-  try {
-    const { title, description, category, tags, mode, stage, investment_target, equity_offered, video_url, image_url } = req.body;
-    if (!title || !description || !category || !mode) {
-      return res.status(400).json({ success: false, message: 'Title, description, category, and mode are required.' });
-    }
-    const result = await db(
-      `INSERT INTO projects (creator_id, title, description, category, tags, required_skills, mode, stage, investment_target, equity_offered, video_url, image_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [req.user.id, title, description, category, tags || [], tags || [], mode, stage || null, investment_target || null, equity_offered || null, video_url || null, image_url || null]
-    );
-    res.status(201).json({ success: true, message: 'Project posted!', project: result.rows[0] });
-  } catch (error) {
-    console.error('Create project error:', error);
-    res.status(500).json({ success: false, message: 'Failed to create project.' });
-  }
-});
- 
-app.post('/api/projects/:id/view', async (req, res) => {
-  try {
-    await db('UPDATE projects SET views = views + 1 WHERE id = $1', [req.params.id]);
-    res.json({ success: true });
-  } catch (error) {
-    res.json({ success: false });
-  }
-});
- 
-// ── MATCHES ROUTES ────────────────────────────
-app.post('/api/matches/swipe', optionalAuth, async (req, res) => {
-  try {
-    const { project_id, action } = req.body;
-    if (!project_id || !action) {
-      return res.status(400).json({ success: false, message: 'project_id and action required.' });
-    }
-    if (!req.user) {
-      return res.json({ success: true, message: 'Swipe recorded (guest).' });
-    }
-    await db(
-      `INSERT INTO swipes (swiper_id, project_id, action) VALUES ($1, $2, $3)
-       ON CONFLICT (swiper_id, project_id, action) DO NOTHING`,
-      [req.user.id, project_id, action]
-    ).catch(() => {});
- 
-    if (action === 'skip') {
-      return res.json({ success: true, message: 'Skipped.' });
-    }
- 
-    const project = await db('SELECT creator_id, title FROM projects WHERE id = $1', [project_id]);
-    if (!project.rows.length) {
-      return res.status(404).json({ success: false, message: 'Project not found.' });
-    }
- 
-    const match_type = action === 'invest' ? 'invest' : 'collab';
-    const matchResult = await db(
-      `INSERT INTO matches (project_id, creator_id, discoverer_id, match_type, status)
-       VALUES ($1, $2, $3, $4, 'pending')
-       ON CONFLICT (project_id, discoverer_id, match_type) DO NOTHING
-       RETURNING id`,
-      [project_id, project.rows[0].creator_id, req.user.id, match_type]
-    );
- 
-    // Stay pending — project owner must accept manually
-    res.json({
-      success: true,
-      message: action === 'invest' ? 'Investment interest sent!' : 'Collaboration request sent!',
-      matched: matchResult.rows.length > 0
-    });
-  } catch (error) {
-    console.error('Swipe error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process swipe.' });
-  }
-});
 
-// ── ACCEPT / DENY MATCH ───────────────────────
-app.post('/api/matches/:id/accept', protect, async (req, res) => {
-  try {
-    // Only the project creator can accept
-    const match = await db(
-      `SELECT m.*, p.creator_id FROM matches m JOIN projects p ON m.project_id = p.id WHERE m.id = $1`,
-      [req.params.id]
-    );
-    if (!match.rows.length) return res.status(404).json({ success: false, message: 'Match not found.' });
-    if (match.rows[0].creator_id !== req.user.id) return res.status(403).json({ success: false, message: 'Not authorized.' });
+// ── ROUTES ────────────────────────────────────
+app.use('/api/auth',     require('./routes/auth'));
+app.use('/api/projects', require('./routes/projects'));
+app.use('/api/matches',  require('./routes/matches'));
+app.use('/api/messages', require('./routes/messages'));
 
-    await db(`UPDATE matches SET status = 'accepted' WHERE id = $1`, [req.params.id]);
-    await db(
-      `INSERT INTO conversations (match_id, user1_id, user2_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-      [req.params.id, match.rows[0].creator_id, match.rows[0].discoverer_id]
-    );
-    res.json({ success: true, message: 'Match accepted!' });
-  } catch (error) {
-    console.error('Accept match error:', error);
-    res.status(500).json({ success: false, message: 'Failed to accept match.' });
-  }
-});
-
-app.post('/api/matches/:id/deny', protect, async (req, res) => {
-  try {
-    const match = await db(
-      `SELECT m.*, p.creator_id FROM matches m JOIN projects p ON m.project_id = p.id WHERE m.id = $1`,
-      [req.params.id]
-    );
-    if (!match.rows.length) return res.status(404).json({ success: false, message: 'Match not found.' });
-    if (match.rows[0].creator_id !== req.user.id) return res.status(403).json({ success: false, message: 'Not authorized.' });
-
-    await db(`UPDATE matches SET status = 'denied' WHERE id = $1`, [req.params.id]);
-    res.json({ success: true, message: 'Match denied.' });
-  } catch (error) {
-    console.error('Deny match error:', error);
-    res.status(500).json({ success: false, message: 'Failed to deny match.' });
-  }
-});
-
-// ── UPDATE PROFILE ────────────────────────────
-app.put('/api/auth/profile', protect, async (req, res) => {
-  try {
-    const { full_name, location, bio, avatar_base64 } = req.body;
-    let avatar_url = null;
-
-    if (avatar_base64) {
-      avatar_url = await uploadToCloudinary(avatar_base64, 'image');
-    }
-
-    const fields = [];
-    const values = [];
-    let i = 1;
-
-    if (full_name) { fields.push(`full_name = $${i++}`); values.push(full_name); }
-    if (location !== undefined) { fields.push(`location = $${i++}`); values.push(location); }
-    if (bio !== undefined) { fields.push(`bio = $${i++}`); values.push(bio); }
-    if (avatar_url) { fields.push(`avatar_url = $${i++}`); values.push(avatar_url); }
-
-    if (!fields.length) return res.status(400).json({ success: false, message: 'Nothing to update.' });
-
-    values.push(req.user.id);
-    const result = await db(
-      `UPDATE users SET ${fields.join(', ')} WHERE id = $${i} RETURNING id, email, full_name, location, bio, avatar_url`,
-      values
-    );
-    res.json({ success: true, user: result.rows[0] });
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update profile.' });
-  }
-});
-
-// ── LIKES ROUTES ──────────────────────────────
-app.post('/api/projects/:id/like', protect, async (req, res) => {
-  try {
-    const existing = await db('SELECT id FROM likes WHERE project_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
-    if (existing.rows.length) {
-      await db('DELETE FROM likes WHERE project_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
-      res.json({ success: true, liked: false });
-    } else {
-      await db('INSERT INTO likes (project_id, user_id) VALUES ($1, $2)', [req.params.id, req.user.id]);
-      res.json({ success: true, liked: true });
-    }
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to toggle like.' });
-  }
-});
-
-app.get('/api/projects/:id/likes', protect, async (req, res) => {
-  try {
-    const result = await db(
-      `SELECT u.id, u.full_name, u.location FROM likes l JOIN users u ON l.user_id = u.id WHERE l.project_id = $1 ORDER BY l.created_at DESC`,
-      [req.params.id]
-    );
-    const myLike = await db('SELECT id FROM likes WHERE project_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
-    res.json({ success: true, likes: result.rows, liked: myLike.rows.length > 0 });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to get likes.' });
-  }
-});
-
-// ── GET REQUESTS FOR A PROJECT ────────────────
-app.get('/api/projects/:id/requests', protect, async (req, res) => {
-  try {
-    // Only the project creator can see requests
-    const project = await db('SELECT creator_id FROM projects WHERE id = $1', [req.params.id]);
-    if (!project.rows.length) return res.status(404).json({ success: false, message: 'Project not found.' });
-    if (project.rows[0].creator_id !== req.user.id) return res.status(403).json({ success: false, message: 'Not authorized.' });
-
-    const result = await db(
-      `SELECT m.id, m.match_type, m.status, m.created_at,
-              u.full_name AS requester_name, u.id AS requester_id, u.location AS requester_location
-       FROM matches m
-       JOIN users u ON m.discoverer_id = u.id
-       WHERE m.project_id = $1 AND m.status = 'pending'
-       ORDER BY m.created_at DESC`,
-      [req.params.id]
-    );
-    res.json({ success: true, requests: result.rows });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to load requests.' });
-  }
-});
-
-// ── COMMENTS ROUTES ───────────────────────────
-app.get('/api/projects/:id/comments', async (req, res) => {
-  try {
-    const result = await db(
-      `SELECT c.id, c.content, c.created_at, c.parent_id,
-              u.full_name AS user_name, u.id AS user_id
-       FROM comments c
-       JOIN users u ON c.user_id = u.id
-       WHERE c.project_id = $1
-       ORDER BY c.created_at ASC`,
-      [req.params.id]
-    );
-    res.json({ success: true, comments: result.rows });
-  } catch (error) {
-    console.error('Get comments error:', error);
-    res.status(500).json({ success: false, message: 'Failed to load comments.' });
-  }
-});
-
-app.post('/api/projects/:id/comments', protect, async (req, res) => {
-  try {
-    const { content, parent_id } = req.body;
-    if (!content) {
-      return res.status(400).json({ success: false, message: 'Comment content required.' });
-    }
-    const result = await db(
-      `INSERT INTO comments (project_id, user_id, content, parent_id)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, content, created_at, parent_id`,
-      [req.params.id, req.user.id, content, parent_id || null]
-    );
-    res.status(201).json({ success: true, comment: result.rows[0] });
-  } catch (error) {
-    console.error('Post comment error:', error);
-    res.status(500).json({ success: false, message: 'Failed to post comment.' });
-  }
-});
-
-// ── MATCHES ROUTES (continued) ────────────────
-app.get('/api/matches/my-matches', protect, async (req, res) => {
-  try {
-    const result = await db(
-      `SELECT m.id, m.match_type, m.status, m.created_at,
-              p.title AS project_title, p.id AS project_id,
-              c.id AS conversation_id,
-              CASE WHEN m.creator_id = $1 THEN u2.full_name ELSE u1.full_name END AS other_user_name,
-              CASE WHEN m.creator_id = $1 THEN m.discoverer_id ELSE m.creator_id END AS other_user_id,
-              CASE WHEN m.creator_id = $1 THEN 'received' ELSE 'sent' END AS direction,
-              conv.last_message
-       FROM matches m
-       JOIN projects p ON m.project_id = p.id
-       JOIN users u1 ON m.creator_id = u1.id
-       JOIN users u2 ON m.discoverer_id = u2.id
-       LEFT JOIN conversations conv ON conv.match_id = m.id
-       LEFT JOIN conversations c ON c.match_id = m.id
-       WHERE (m.creator_id = $1 OR m.discoverer_id = $1)
-         AND m.status IN ('pending', 'accepted', 'denied')
-       ORDER BY m.status ASC, m.created_at DESC`,
-      [req.user.id]
-    );
-    res.json({ success: true, matches: result.rows });
-  } catch (error) {
-    console.error('Get matches error:', error);
-    res.status(500).json({ success: false, message: 'Failed to load matches.' });
-  }
-});
- 
-// ── MESSAGES ROUTES ───────────────────────────
-app.get('/api/messages/:conversation_id', protect, async (req, res) => {
-  try {
-    const result = await db(
-      `SELECT m.*, u.full_name AS sender_name
-       FROM messages m
-       JOIN users u ON m.sender_id = u.id
-       WHERE m.conversation_id = $1
-       ORDER BY m.created_at ASC`,
-      [req.params.conversation_id]
-    );
-    res.json({ success: true, messages: result.rows });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to load messages.' });
-  }
-});
- 
-app.post('/api/messages/:conversation_id', protect, async (req, res) => {
-  try {
-    const { content } = req.body;
-    if (!content) return res.status(400).json({ success: false, message: 'Message content required.' });
-    const result = await db(
-      `INSERT INTO messages (conversation_id, sender_id, content) VALUES ($1, $2, $3) RETURNING *`,
-      [req.params.conversation_id, req.user.id, content]
-    );
-    await db(
-      `UPDATE conversations SET last_message = $1, last_message_at = NOW() WHERE id = $2`,
-      [content.substring(0, 100), req.params.conversation_id]
-    );
-    res.status(201).json({ success: true, message: result.rows[0] });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to send message.' });
-  }
-});
- 
-app.put('/api/messages/:conversation_id/read', protect, async (req, res) => {
-  try {
-    await db(
-      `UPDATE messages SET is_read = true WHERE conversation_id = $1 AND sender_id != $2`,
-      [req.params.conversation_id, req.user.id]
-    );
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ success: false });
-  }
-});
- 
 // ── 404 ───────────────────────────────────────
 app.use('*', (req, res) => {
   res.status(404).json({ success: false, message: 'Route not found.' });
 });
- 
+
 // ── START ─────────────────────────────────────
 app.listen(PORT, () => {
   console.log('========================================');
@@ -661,5 +119,5 @@ app.listen(PORT, () => {
   console.log(`  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? 'Connected' : 'Not configured'}`);
   console.log('========================================');
 });
- 
+
 module.exports = app;
