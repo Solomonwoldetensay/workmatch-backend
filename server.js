@@ -526,7 +526,7 @@ app.get('/api/matches/my-matches', protect, async (req, res) => {
        LEFT JOIN conversations conv ON conv.match_id = m.id
        LEFT JOIN conversations c ON c.match_id = m.id
        WHERE (m.creator_id = $1 OR m.discoverer_id = $1)
-         AND m.status IN ('pending', 'accepted')
+         AND m.status IN ('pending', 'accepted', 'denied')
        ORDER BY m.status ASC, m.created_at DESC`,
       [req.user.id]
     );
