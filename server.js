@@ -101,10 +101,11 @@ app.post('/api/upload', protect, async (req, res) => {
 });
 
 // ── ROUTES ────────────────────────────────────
-app.use('/api/auth',     require('./routes/auth'));
-app.use('/api/projects', require('./routes/projects'));
-app.use('/api/matches',  require('./routes/matches'));
-app.use('/api/messages', require('./routes/messages'));
+app.use('/api/auth',          require('./routes/auth'));
+app.use('/api/projects',      require('./routes/projects'));
+app.use('/api/matches',       require('./routes/matches'));
+app.use('/api/messages',      require('./routes/messages'));
+app.use('/api/notifications', require('./routes/notifications').router);
 
 // ── 404 ───────────────────────────────────────
 app.use('*', (req, res) => {
