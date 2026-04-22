@@ -236,4 +236,63 @@ router.put('/profile', protect, async (req, res) => {
   }
 });
 
+
+// ══════════════════════════════════════════════
+// POST /api/auth/google/token  ← OAuth access token flow
+// Used when Google popup returns an access_token
+// ══════════════════════════════════════════════
+router.post('/google/token', async (req, res) => {
+  try {
+    const { access_token, user: googleUser } = req.body;
+
+    if (!access_token || !googleUser) {
+      return res.status(400).json({ success: false, message: 'Access token and user info required.' });
+    }
+
+    const { sub: google_id, email, name, picture } = googleUser;
+
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Google account must have an email address.' });
+    }
+
+    let result = await query(
+      'SELECT * FROM users WHERE email = $1 OR google_id = $2',
+      [email, google_id]
+    );
+
+    let user;
+    let isNewUser = false;
+
+    if (result.rows.length > 0) {
+      user = result.rows[0];
+      await query(
+        `UPDATE users SET google_id=$1, avatar_url=COALESCE(avatar_url,$2),
+         auth_provider=COALESCE(auth_provider,'google'), updated_at=NOW() WHERE id=$3`,
+        [google_id, picture, user.id]
+      );
+      result = await query('SELECT * FROM users WHERE id = $1', [user.id]);
+      user = result.rows[0];
+    } else {
+      isNewUser = true;
+      result = await query(
+        `INSERT INTO users (email, full_name, avatar_url, google_id, auth_provider, password_hash, bio, location, skills, role, is_verified)
+         VALUES ($1,$2,$3,$4,'google',NULL,NULL,NULL,'{}','user',true) RETURNING *`,
+        [email, name || email.split('@')[0], picture, google_id]
+      );
+      user = result.rows[0];
+    }
+
+    const token = generateToken(user.id);
+    res.status(isNewUser ? 201 : 200).json({
+      success: true, is_new_user: isNewUser,
+      message: isNewUser ? 'Account created with Google!' : 'Welcome back!',
+      token, user: safeUser(user),
+    });
+
+  } catch (error) {
+    console.error('Google token auth error:', error);
+    res.status(500).json({ success: false, message: 'Google sign in failed.' });
+  }
+});
+
 module.exports = router;
