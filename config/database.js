@@ -1,6 +1,4 @@
 
-Copy
-
 // ─────────────────────────────────────────────
 // WorkMatch — Database Connection
 // Uses PostgreSQL via the 'pg' library
