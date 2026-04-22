@@ -283,10 +283,11 @@ router.post('/google/token', async (req, res) => {
     }
 
     const token = generateToken(user.id);
+    const { password_hash, ...safeU } = user;
     res.status(isNewUser ? 201 : 200).json({
       success: true, is_new_user: isNewUser,
       message: isNewUser ? 'Account created with Google!' : 'Welcome back!',
-      token, user: safeUser(user),
+      token, user: safeU,
     });
 
   } catch (error) {
