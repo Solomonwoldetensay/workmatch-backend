@@ -1,299 +1,220 @@
-// ─────────────────────────────────────────────
-// WE-NEED-U — Authentication Routes
-// POST /api/auth/signup   — email signup
-// POST /api/auth/login    — email login
-// POST /api/auth/google   — Google Sign In ← NEW
-// GET  /api/auth/me       — get current user
-// PUT  /api/auth/profile  — update profile + avatar
-// ─────────────────────────────────────────────
-
-const express  = require('express');
-const bcrypt   = require('bcryptjs');
-const jwt      = require('jsonwebtoken');
-const https    = require('https');
-const crypto   = require('crypto');
-const { body, validationResult } = require('express-validator');
-const { query } = require('../config/database');
-const { protect } = require('../middleware/auth');
-const { OAuth2Client } = require('google-auth-library');
-
-const router = express.Router();
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+// ── LOGIN ──────────────────────────
+document.getElementById('lbtn').onclick=async function(){
+  var em=document.getElementById('lemail').value.trim();
+  var pw=document.getElementById('lpw').value.trim();
+  var err=document.getElementById('lerr');
+  if(!em||!pw){err.textContent='Enter email and password.';return;}
+  err.textContent='';this.textContent='Signing in...';this.disabled=true;
+  var slowTimer=setTimeout(function(){err.style.color='#7c6af7';err.textContent='Starting up server... please wait 30 seconds ☕';},5000);
+  // Node.js backend: POST /api/auth/login
+  var r=await api('/auth/login','POST',{email:em,password:pw});
+  clearTimeout(slowTimer);err.style.color='#e24b4a';this.textContent='Sign In';this.disabled=false;
+  if(r.ok){
+    token=r.data.token;
+    user=r.data.user;
+    // Node.js returns user.full_name
+    if(user&&!user.full_name&&user.name)user.full_name=user.name;
+    if(user&&!user.name&&user.full_name)user.name=user.full_name;
+    localStorage.setItem('wm_token',token);
+    localStorage.setItem('wm_user',JSON.stringify(user));
+    enterApp();
+  }else{
+    // Node.js returns r.data.message
+    err.textContent=r.data.message||'Login failed.';
+  }
 };
 
-// ── Cloudinary upload helper (unchanged) ──────
-async function uploadToCloudinary(base64Data, resourceType = 'image') {
-  return new Promise((resolve, reject) => {
-    const cloudName  = process.env.CLOUDINARY_CLOUD_NAME;
-    const apiKey     = process.env.CLOUDINARY_API_KEY;
-    const apiSecret  = process.env.CLOUDINARY_API_SECRET;
-    if (!cloudName || !apiKey || !apiSecret) { reject(new Error('Cloudinary not configured')); return; }
-    const timestamp = Math.round(Date.now() / 1000);
-    const folder = 'we-need-u';
-    const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
-    const signature = crypto.createHash('sha1').update(paramsToSign + apiSecret).digest('hex');
-    const boundary = '----FormBoundary' + Math.random().toString(36);
-    const body = [
-      `--${boundary}`, 'Content-Disposition: form-data; name="file"', '', base64Data,
-      `--${boundary}`, 'Content-Disposition: form-data; name="api_key"', '', apiKey,
-      `--${boundary}`, 'Content-Disposition: form-data; name="timestamp"', '', timestamp.toString(),
-      `--${boundary}`, 'Content-Disposition: form-data; name="signature"', '', signature,
-      `--${boundary}`, 'Content-Disposition: form-data; name="folder"', '', folder,
-      `--${boundary}--`,
-    ].join('\r\n');
-    const bodyBuffer = Buffer.from(body, 'utf8');
-    const options = {
-      hostname: 'api.cloudinary.com',
-      path: `/v1_1/${cloudName}/${resourceType}/upload`,
-      method: 'POST',
-      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': bodyBuffer.length },
-    };
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.secure_url) resolve(parsed.secure_url);
-          else reject(new Error(parsed.error?.message || 'Upload failed'));
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.write(bodyBuffer);
-    req.end();
+// ── SIGNUP ──────────────────────────
+document.getElementById('sbtn').onclick=async function(){
+  var name=document.getElementById('sname').value.trim();
+  var em=document.getElementById('semail').value.trim();
+  var pw=document.getElementById('spw').value.trim();
+  var loc=document.getElementById('sloc').value.trim();
+  var err=document.getElementById('serr');
+  if(!name||!em||!pw){err.textContent='Fill in all fields.';return;}
+  if(pw.length<6){err.textContent='Password needs 6+ characters.';return;}
+  err.textContent='';this.textContent='Creating...';this.disabled=true;
+  var slowTimer=setTimeout(function(){err.style.color='#7c6af7';err.textContent='Starting up server... please wait 30 seconds ☕';},5000);
+  // FIX: Node.js backend route is /auth/signup (NOT /auth/register)
+  // FIX: Node.js expects full_name (NOT name)
+  var r=await api('/auth/signup','POST',{full_name:name,email:em,password:pw,location:loc});
+  clearTimeout(slowTimer);err.style.color='#e24b4a';this.textContent='Create Account';this.disabled=false;
+  if(r.ok){
+    token=r.data.token;
+    user=r.data.user;
+    if(user&&!user.full_name&&user.name)user.full_name=user.name;
+    if(user&&!user.name&&user.full_name)user.name=user.full_name;
+    localStorage.setItem('wm_token',token);
+    localStorage.setItem('wm_user',JSON.stringify(user));
+    enterApp();
+  }else if(r.data.message&&r.data.message.indexOf('already exists')>-1){
+    // Account exists - try logging in instead
+    err.style.color='#7c6af7';err.textContent='Account found! Signing you in...';
+    var lr=await api('/auth/login','POST',{email:em,password:pw});
+    if(lr.ok){
+      token=lr.data.token;user=lr.data.user;
+      if(user&&!user.full_name&&user.name)user.full_name=user.name;
+      if(user&&!user.name&&user.full_name)user.name=user.full_name;
+      localStorage.setItem('wm_token',token);
+      localStorage.setItem('wm_user',JSON.stringify(user));
+      enterApp();
+    }else{
+      err.style.color='#e24b4a';
+      err.textContent='Account exists. Please sign in instead.';
+      setTimeout(function(){show('pg-login');document.getElementById('lemail').value=em;},1500);
+    }
+  }else{
+    err.textContent=r.data.message||'Signup failed.';
+  }
+};
+
+// Switch between login and signup screens
+document.getElementById('gosu').onclick=function(){show('pg-signup');};
+document.getElementById('goli').onclick=function(){show('pg-login');};
+
+// ── NAV WIRING ──────────────────────────
+document.getElementById('n1').onclick=goFeed;document.getElementById('n2').onclick=goMatch;document.getElementById('n3').onclick=goMessages;document.getElementById('n4').onclick=goProf;
+document.getElementById('n5').onclick=goFeed;document.getElementById('n6').onclick=goMatch;document.getElementById('n7').onclick=goMessages;document.getElementById('n8').onclick=goProf;
+document.getElementById('n9').onclick=goFeed;document.getElementById('n10').onclick=goMatch;document.getElementById('n11').onclick=goMessages;document.getElementById('n12').onclick=goProf;
+document.getElementById('n13').onclick=goFeed;document.getElementById('n14').onclick=goMatch;document.getElementById('n15').onclick=goMessages;document.getElementById('n16').onclick=goProf;
+document.getElementById('nm1').onclick=goFeed;document.getElementById('nm2').onclick=goMatch;document.getElementById('nm3').onclick=goMessages;document.getElementById('nm4').onclick=goProf;
+
+// Back button in chat
+document.getElementById('cbk').onclick=function(){show('pg-matches');};
+
+// Sign out
+document.getElementById('logbtn').onclick=function(){
+  token=null;user=null;
+  localStorage.removeItem('wm_token');
+  localStorage.removeItem('wm_user');
+  show('pg-login');
+};
+
+// Close creator modal
+document.getElementById('cmx').onclick=function(){document.getElementById('cmask').classList.remove('on');};
+document.getElementById('cmask').onclick=function(e){if(e.target===this)this.classList.remove('on');};
+
+// Send message
+document.getElementById('csend').onclick=sendMsg;
+document.getElementById('cbox').onkeydown=function(e){if(e.key==='Enter')sendMsg();};
+
+// Avatar upload
+document.getElementById('pav-wrap').onclick=function(){document.getElementById('avatar-file').click();};
+document.getElementById('avatar-file').onchange=async function(){
+  var f=this.files[0];if(!f)return;
+  var pavEl=document.getElementById('pav');
+  pavEl.innerHTML='<div style="font-size:11px;color:#aaa;">...</div>';
+  var reader=new FileReader();
+  reader.onload=async function(e){
+    // Node.js: PUT /api/auth/profile
+    var r=await api('/auth/profile','PUT',{avatar_base64:e.target.result});
+    if(r.ok&&r.data.user&&r.data.user.avatar_url){
+      user.avatar_url=r.data.user.avatar_url;
+      pavEl.innerHTML='<img src="'+user.avatar_url+'" alt="avatar"/>';
+      showAvatarToast('✅ Profile photo updated!');
+    }else{
+      pavEl.textContent=ini(user.full_name||user.name);
+      showAvatarToast('❌ Upload failed, try again');
+    }
+  };
+  reader.readAsDataURL(f);
+};
+
+// Close user profile modal
+document.getElementById('user-profile-close').onclick=function(){
+  document.getElementById('user-profile-mask').classList.remove('on');
+  pickAndPlayBestSlide();
+};
+document.getElementById('user-profile-mask').onclick=function(e){
+  if(e.target===this)this.classList.remove('on');
+};
+
+// ── GOOGLE SIGN IN ──────────────────────────
+var GOOGLE_CLIENT_ID='855168386507-5tjaea79rg95ghmjb57eirpggeoapj9b.apps.googleusercontent.com';
+
+function triggerGoogleSignIn(){
+  var errEl=document.getElementById('lerr')||document.getElementById('serr');
+  if(errEl)errEl.textContent='';
+  google.accounts.id.initialize({
+    client_id:GOOGLE_CLIENT_ID,
+    callback:handleGoogleSignIn,
+    auto_select:false,
+    cancel_on_tap_outside:true
   });
+  var container=document.getElementById('g-btn-container');
+  if(container){
+    container.innerHTML='';
+    google.accounts.id.renderButton(container,{theme:'filled_black',size:'large',width:280,text:'continue_with',shape:'rectangular'});
+    setTimeout(function(){var btn=container.querySelector('div[role=button]');if(btn)btn.click();},300);
+  }
 }
 
-// ══════════════════════════════════════════════
-// POST /api/auth/google  ← NEW
-// ══════════════════════════════════════════════
-router.post('/google', async (req, res) => {
-  try {
-    const { id_token } = req.body;
-    if (!id_token) return res.status(400).json({ success: false, message: 'Google ID token is required.' });
+var gIcon='<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>';
 
-    let ticket;
-    try {
-      ticket = await googleClient.verifyIdToken({ idToken: id_token, audience: process.env.GOOGLE_CLIENT_ID });
-    } catch (err) {
-      console.error('Google token verification failed:', err.message);
-      return res.status(401).json({ success: false, message: 'Invalid Google token. Please try again.' });
+function resetGoogleBtns(){
+  var lbtn=document.getElementById('google-login-btn');
+  var sbtn=document.getElementById('google-signup-btn');
+  if(lbtn)lbtn.innerHTML=gIcon+' Continue with Google';
+  if(sbtn)sbtn.innerHTML=gIcon+' Sign up with Google';
+}
+
+function loginSuccess(data){
+  token=data.token;
+  user=data.user;
+  if(user&&!user.full_name&&user.name)user.full_name=user.name;
+  if(user&&!user.name&&user.full_name)user.name=user.full_name;
+  localStorage.setItem('wm_token',token);
+  localStorage.setItem('wm_user',JSON.stringify(user));
+  enterApp();
+}
+
+async function handleGoogleSignIn(googleResponse){
+  var errEl=document.getElementById('lerr')||document.getElementById('serr');
+  var lbtn=document.getElementById('google-login-btn');
+  if(lbtn)lbtn.textContent='Signing in...';
+  // Node.js: POST /api/auth/google
+  var r=await api('/auth/google','POST',{id_token:googleResponse.credential});
+  resetGoogleBtns();
+  if(r.ok)loginSuccess(r.data);
+  else if(errEl)errEl.textContent=r.data.message||'Google sign in failed.';
+}
+
+async function handleGoogleCallback(code){
+  var errEl=document.getElementById('lerr')||document.getElementById('serr');
+  var r=await api('/auth/google/mobile','POST',{code:code,redirect_uri:BACKEND+'/api/auth/google/callback'});
+  resetGoogleBtns();
+  if(r.ok)loginSuccess(r.data);
+  else if(errEl)errEl.textContent=r.data.message||'Google sign in failed.';
+}
+
+async function exchangeGoogleToken(accessToken){
+  var errEl=document.getElementById('lerr')||document.getElementById('serr');
+  try{
+    var resp=await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:{Authorization:'Bearer '+accessToken}});
+    var gUser=await resp.json();
+    // Node.js: POST /api/auth/google/token
+    var r=await api('/auth/google/token','POST',{access_token:accessToken,user:gUser});
+    resetGoogleBtns();
+    if(r.ok)loginSuccess(r.data);
+    else if(errEl)errEl.textContent=r.data.message||'Google sign in failed.';
+  }catch(e){if(errEl)errEl.textContent='Google sign in failed. Try again.';}
+}
+
+window.addEventListener('message',function(e){
+  if(e.data&&e.data.type==='google-auth'&&e.data.code)handleGoogleCallback(e.data.code);
+});
+
+// ── INIT ──────────────────────────
+window.onload=function(){
+  var hash=window.location.hash;
+  if(hash&&hash.indexOf('access_token')>-1){
+    var params=new URLSearchParams(hash.substring(1));
+    var accessToken=params.get('access_token');
+    if(accessToken){
+      history.replaceState(null,null,window.location.pathname);
+      exchangeGoogleToken(accessToken);
+      return;
     }
-
-    const payload = ticket.getPayload();
-    const { email, name, picture } = payload;
-    if (!email) return res.status(400).json({ success: false, message: 'Google account must have an email address.' });
-
-    // Check if user already exists
-    let result = await query(
-      'SELECT id, email, password_hash, full_name, bio, location, skills, avatar_url, role FROM users WHERE email = $1',
-      [email]
-    );
-
-    let user;
-    let isNewUser = false;
-
-    if (result.rows.length > 0) {
-      user = result.rows[0];
-      // Update avatar if they don't have one yet
-      if (!user.avatar_url && picture) {
-        await query('UPDATE users SET avatar_url = $1 WHERE id = $2', [picture, user.id]);
-        user.avatar_url = picture;
-      }
-    } else {
-      // New user — password_hash is NOT NULL in your DB so store an unusable random hash
-      isNewUser = true;
-      const unusableHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
-      result = await query(
-        `INSERT INTO users (email, password_hash, full_name, avatar_url, location, skills)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, email, full_name, bio, location, skills, avatar_url, role`,
-        [email, unusableHash, name || email.split('@')[0], picture || null, null, []]
-      );
-      user = result.rows[0];
-    }
-
-    const token = generateToken(user.id);
-    const { password_hash, ...safeUser } = user;
-    res.status(isNewUser ? 201 : 200).json({ success: true, is_new_user: isNewUser, message: isNewUser ? 'Account created with Google!' : 'Welcome back!', token, user: safeUser });
-
-  } catch (error) {
-    console.error('Google auth error:', error);
-    res.status(500).json({ success: false, message: 'Google sign in failed. Please try again.' });
   }
-});
-
-// ══════════════════════════════════════════════
-// POST /api/auth/signup  (unchanged)
-// ══════════════════════════════════════════════
-router.post('/signup', [
-  body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
-  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
-  body('full_name').trim().notEmpty().withMessage('Full name is required'),
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
-    const { email, password, full_name, location, skills } = req.body;
-    const existing = await query('SELECT id FROM users WHERE email = $1', [email]);
-    if (existing.rows.length > 0) return res.status(400).json({ success: false, message: 'An account with this email already exists.' });
-    const password_hash = await bcrypt.hash(password, 10);
-    const result = await query(
-      `INSERT INTO users (email, password_hash, full_name, location, skills)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, email, full_name, location, skills, created_at`,
-      [email, password_hash, full_name, location || null, skills || []]
-    );
-    const user = result.rows[0];
-    const token = generateToken(user.id);
-    res.status(201).json({ success: true, message: 'Account created!', token, user });
-  } catch (error) {
-    console.error('Signup error:', error);
-    res.status(500).json({ success: false, message: 'Failed to create account.' });
-  }
-});
-
-// ══════════════════════════════════════════════
-// POST /api/auth/login  (unchanged)
-// ══════════════════════════════════════════════
-router.post('/login', [
-  body('email').isEmail().normalizeEmail(),
-  body('password').notEmpty(),
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Valid email and password required.' });
-    const { email, password } = req.body;
-    const result = await query(
-      'SELECT id, email, password_hash, full_name, bio, location, skills, avatar_url, role FROM users WHERE email = $1',
-      [email]
-    );
-    if (result.rows.length === 0) return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
-    const user = result.rows[0];
-    const passwordMatch = await bcrypt.compare(password, user.password_hash);
-    if (!passwordMatch) return res.status(401).json({ success: false, message: 'Incorrect email or password.' });
-    const token = generateToken(user.id);
-    const { password_hash, ...safeUser } = user;
-    res.json({ success: true, message: 'Logged in!', token, user: safeUser });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ success: false, message: 'Login failed.' });
-  }
-});
-
-// ══════════════════════════════════════════════
-// GET /api/auth/me  (unchanged)
-// ══════════════════════════════════════════════
-router.get('/me', protect, async (req, res) => {
-  try {
-    const result = await query(
-      `SELECT id, email, full_name, bio, location, skills, avatar_url, investor_profile, is_verified, created_at
-       FROM users WHERE id = $1`,
-      [req.user.id]
-    );
-    if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'User not found.' });
-    const stats = await query(
-      `SELECT 
-         (SELECT COUNT(*) FROM projects WHERE creator_id = $1 AND is_active = true) AS project_count,
-         (SELECT COUNT(*) FROM matches WHERE (creator_id = $1 OR discoverer_id = $1) AND status = 'accepted') AS match_count`,
-      [req.user.id]
-    );
-    res.json({ success: true, user: { ...result.rows[0], stats: { projects: parseInt(stats.rows[0].project_count), matches: parseInt(stats.rows[0].match_count) } } });
-  } catch (error) {
-    console.error('Get me error:', error);
-    res.status(500).json({ success: false, message: 'Failed to get user data.' });
-  }
-});
-
-// ══════════════════════════════════════════════
-// PUT /api/auth/profile  (unchanged)
-// ══════════════════════════════════════════════
-router.put('/profile', protect, async (req, res) => {
-  try {
-    const { full_name, bio, location, skills, investor_profile, avatar_base64 } = req.body;
-    let avatar_url = null;
-    if (avatar_base64) avatar_url = await uploadToCloudinary(avatar_base64, 'image');
-    const result = await query(
-      `UPDATE users SET
-         full_name        = COALESCE($1, full_name),
-         bio              = COALESCE($2, bio),
-         location         = COALESCE($3, location),
-         skills           = COALESCE($4, skills),
-         investor_profile = COALESCE($5, investor_profile),
-         avatar_url       = COALESCE($6, avatar_url)
-       WHERE id = $7
-       RETURNING id, email, full_name, bio, location, skills, avatar_url, investor_profile`,
-      [full_name || null, bio || null, location || null, skills || null, investor_profile || null, avatar_url, req.user.id]
-    );
-    res.json({ success: true, message: 'Profile updated!', user: result.rows[0] });
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update profile.' });
-  }
-});
-
-
-// ══════════════════════════════════════════════
-// POST /api/auth/google/token  ← OAuth access token flow
-// Used when Google popup returns an access_token
-// ══════════════════════════════════════════════
-router.post('/google/token', async (req, res) => {
-  try {
-    const { access_token, user: googleUser } = req.body;
-
-    if (!access_token || !googleUser) {
-      return res.status(400).json({ success: false, message: 'Access token and user info required.' });
-    }
-
-    const { sub: google_id, email, name, picture } = googleUser;
-
-    if (!email) {
-      return res.status(400).json({ success: false, message: 'Google account must have an email address.' });
-    }
-
-    let result = await query(
-      'SELECT * FROM users WHERE email = $1 OR google_id = $2',
-      [email, google_id]
-    );
-
-    let user;
-    let isNewUser = false;
-
-    if (result.rows.length > 0) {
-      user = result.rows[0];
-      await query(
-        `UPDATE users SET google_id=$1, avatar_url=COALESCE(avatar_url,$2),
-         auth_provider=COALESCE(auth_provider,'google'), updated_at=NOW() WHERE id=$3`,
-        [google_id, picture, user.id]
-      );
-      result = await query('SELECT * FROM users WHERE id = $1', [user.id]);
-      user = result.rows[0];
-    } else {
-      isNewUser = true;
-      result = await query(
-        `INSERT INTO users (email, full_name, avatar_url, google_id, auth_provider, password_hash, bio, location, skills, role, is_verified)
-         VALUES ($1,$2,$3,$4,'google',NULL,NULL,NULL,'{}','user',true) RETURNING *`,
-        [email, name || email.split('@')[0], picture, google_id]
-      );
-      user = result.rows[0];
-    }
-
-    const token = generateToken(user.id);
-    const { password_hash, ...safeU } = user;
-    res.status(isNewUser ? 201 : 200).json({
-      success: true, is_new_user: isNewUser,
-      message: isNewUser ? 'Account created with Google!' : 'Welcome back!',
-      token, user: safeU,
-    });
-
-  } catch (error) {
-    console.error('Google token auth error:', error);
-    res.status(500).json({ success: false, message: 'Google sign in failed.' });
-  }
-});
-
-module.exports = router;
+  if(token&&user)enterApp();
+};
