@@ -1,19 +1,21 @@
-
 // ─────────────────────────────────────────────
 // WorkMatch — Database Connection
 // Uses PostgreSQL via the 'pg' library
 // Supports both local DB and Supabase cloud DB
 // ─────────────────────────────────────────────
- 
+
 const { Pool } = require('pg');
 require('dotenv').config();
- 
+
 // Use DATABASE_URL if provided (Supabase), otherwise use individual vars
 const pool = new Pool(
   process.env.DATABASE_URL
     ? {
         connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false }, // Required for Supabase
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 10000,
+        idleTimeoutMillis: 30000,
+        max: 10
       }
     : {
         host:     process.env.DB_HOST     || 'localhost',
@@ -23,7 +25,7 @@ const pool = new Pool(
         password: process.env.DB_PASSWORD || '',
       }
 );
- 
+
 // Test connection on startup
 pool.connect((err, client, release) => {
   if (err) {
@@ -34,7 +36,17 @@ pool.connect((err, client, release) => {
     release();
   }
 });
- 
+
+// Keep connection alive every 4 minutes
+// Prevents Supabase from dropping the connection on free tier
+setInterval(async () => {
+  try {
+    await pool.query('SELECT 1');
+  } catch (e) {
+    console.error('DB keepalive failed:', e.message);
+  }
+}, 240000);
+
 // Helper — run a query with automatic error handling
 const query = async (text, params) => {
   const start = Date.now();
@@ -51,5 +63,5 @@ const query = async (text, params) => {
     throw error;
   }
 };
- 
+
 module.exports = { pool, query };
