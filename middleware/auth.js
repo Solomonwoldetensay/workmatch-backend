@@ -2,24 +2,24 @@
 // WorkMatch — Authentication Middleware
 // Verifies JWT token on protected routes
 // ─────────────────────────────────────────────
- 
+
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
- 
+
 const protect = async (req, res, next) => {
   try {
     // Get token from Authorization header: "Bearer <token>"
     const authHeader = req.headers.authorization;
- 
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({
         success: false,
         message: 'Not authorized. Please log in.'
       });
     }
- 
+
     const token = authHeader.split(' ')[1];
- 
+
     // Verify the token
     let decoded;
     try {
@@ -32,30 +32,31 @@ const protect = async (req, res, next) => {
           : 'Invalid token. Please log in again.'
       });
     }
- 
+
     // Check user still exists in database
+    // FIX: use decoded.userId not decoded.id
     const result = await query(
       'SELECT id, email, full_name, role FROM users WHERE id = $1',
-      [decoded.id]
+      [decoded.userId]
     );
- 
+
     if (result.rows.length === 0) {
       return res.status(401).json({
         success: false,
         message: 'User no longer exists.'
       });
     }
- 
+
     // Attach user to request object
     req.user = result.rows[0];
     next();
- 
+
   } catch (error) {
     console.error('Auth middleware error:', error);
     res.status(500).json({ success: false, message: 'Server error during authentication.' });
   }
 };
- 
+
 // Optional auth — attaches user if token exists, but doesn't block if missing
 const optionalAuth = async (req, res, next) => {
   try {
@@ -66,7 +67,11 @@ const optionalAuth = async (req, res, next) => {
     }
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const result = await query('SELECT id, email, full_name FROM users WHERE id = $1', [decoded.id]);
+    // FIX: use decoded.userId not decoded.id
+    const result = await query(
+      'SELECT id, email, full_name FROM users WHERE id = $1',
+      [decoded.userId]
+    );
     req.user = result.rows[0] || null;
     next();
   } catch {
@@ -74,5 +79,5 @@ const optionalAuth = async (req, res, next) => {
     next();
   }
 };
- 
+
 module.exports = { protect, optionalAuth };
